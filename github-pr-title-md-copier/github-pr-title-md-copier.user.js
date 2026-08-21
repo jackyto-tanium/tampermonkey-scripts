@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GitHub PR Title Markdown Copier
 // @namespace    github-pr-title-md-copier
-// @version      1.0
+// @version      1.1
 // @author       Jacky To
 // @description  Copy PR title+link as markdown, from a PR page or the PR list table
 // @include      https://git.corp.*.com/*
@@ -56,18 +56,18 @@
     h1.appendChild(btn);
   }
 
-  // ---- Buttons 2 & 3: PR list page ----
+  // ---- Buttons 2-4: PR list page ----
+  function rowData(row) {
+    const link = row.querySelector('a.markdown-title[data-hovercard-type="pull_request"]');
+    if (!link) return null;
+    return {
+      title: link.textContent.trim(),
+      url: new URL(link.getAttribute('href'), location.origin).href,
+    };
+  }
+
   function rowsFromDoc(doc) {
-    return Array.from(doc.querySelectorAll('.js-issue-row'))
-      .map((row) => {
-        const link = row.querySelector('a.markdown-title[data-hovercard-type="pull_request"]');
-        if (!link) return null;
-        return {
-          title: link.textContent.trim(),
-          url: new URL(link.getAttribute('href'), location.origin).href,
-        };
-      })
-      .filter(Boolean);
+    return Array.from(doc.querySelectorAll('.js-issue-row')).map(rowData).filter(Boolean);
   }
 
   async function collectAllPages() {
@@ -151,8 +151,63 @@
       }
     });
 
+    // Reuse the list's native per-row bulk-select checkboxes (normally
+    // hidden below GHE's `md` breakpoint) instead of injecting new ones.
+    function rowCheckboxes() {
+      return Array.from(document.querySelectorAll('.js-issue-row input.js-issues-list-check'));
+    }
+
+    let selectMode = false;
+
+    function setCheckboxesVisible(visible) {
+      rowCheckboxes().forEach((cb) => {
+        const label = cb.closest('label');
+        if (label) label.style.display = visible ? 'block' : '';
+        if (!visible) cb.checked = false;
+      });
+    }
+
+    function updateCopySelectedState() {
+      btnCopySelected.disabled = !rowCheckboxes().some((cb) => cb.checked);
+    }
+
+    const btnToggleSelect = makeIconButton('☑️', 'Select PRs to copy');
+    const btnCopySelected = makeIconButton('📋', 'Copy selected PRs as a Markdown list');
+    btnCopySelected.style.display = 'none';
+    btnCopySelected.disabled = true;
+
+    btnToggleSelect.addEventListener('click', () => {
+      selectMode = !selectMode;
+      setCheckboxesVisible(selectMode);
+      btnCopySelected.style.display = selectMode ? '' : 'none';
+      btnToggleSelect.title = selectMode ? 'Cancel PR selection' : 'Select PRs to copy';
+      updateCopySelectedState();
+    });
+
+    btnCopySelected.addEventListener('click', () => {
+      const items = rowCheckboxes()
+        .filter((cb) => cb.checked)
+        .map((cb) => rowData(cb.closest('.js-issue-row')))
+        .filter(Boolean);
+      copyText(toMdList(items));
+      flash(btnCopySelected, '✅');
+
+      selectMode = false;
+      setCheckboxesVisible(false);
+      btnCopySelected.style.display = 'none';
+      btnToggleSelect.title = 'Select PRs to copy';
+    });
+
+    // Delegated listener: rows come and go across Turbo navigations, but
+    // the toolbar (and this listener) is only created once per page load.
+    box.addEventListener('change', (e) => {
+      if (e.target.matches('input.js-issues-list-check')) updateCopySelectedState();
+    });
+
     toolbar.appendChild(btnPage);
     toolbar.appendChild(btnAll);
+    toolbar.appendChild(btnToggleSelect);
+    toolbar.appendChild(btnCopySelected);
     box.parentElement.insertBefore(toolbar, box);
   }
 
